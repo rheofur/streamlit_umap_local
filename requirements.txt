@@ -10,8 +10,7 @@ anndata
 scanpy
 pynndescent
 session-info
-PyDrive2==1.21.3
-# Pinning the following google libraries to resolve the authentication error
-google-api-python-client==2.113.0
-google-auth-oauthlib==0.4.6
-oauth2client==4.1.3
+# Google API Libraries
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
