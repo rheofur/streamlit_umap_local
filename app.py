@@ -10,7 +10,7 @@ from google.oauth2.service_account import Credentials
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="UMAP Plotter from Google Drive",
+    page_title="UMAP & Gene Expression Plotter",
     page_icon="🧬",
     layout="wide"
 )
@@ -19,10 +19,7 @@ st.set_page_config(
 @st.cache_resource
 def get_gdrive_service():
     """Authenticates with Google Drive using Service Account credentials."""
-    # Load credentials from Streamlit secrets
     creds_json = st.secrets.google_credentials.service_account_json
-    
-    # The Pydrive2 library expects a file, so we write the JSON string to a temporary file
     with open("service_creds.json", "w") as f:
         f.write(creds_json)
     
@@ -30,8 +27,6 @@ def get_gdrive_service():
     scope = ["https://www.googleapis.com/auth/drive.readonly"]
     gauth.credentials = Credentials.from_service_account_file("service_creds.json", scopes=scope)
     drive = GoogleDrive(gauth)
-    
-    # Clean up the temporary credentials file
     os.remove("service_creds.json")
     return drive
 
@@ -50,61 +45,72 @@ def download_h5ad_from_drive(_drive, file_id, file_name):
     return file_name
 
 # --- App UI ---
-st.title("🔬 Interactive UMAP from Curated Single-Cell Data")
-st.write("Select a dataset from the dropdown below to generate and explore its UMAP visualization.")
+st.title("🔬 Interactive UMAP & Gene Expression Plotter")
+st.write("Select a dataset to visualize cell metadata or individual gene expression.")
 
 try:
     drive = get_gdrive_service()
     folder_id = st.secrets.folder_id
-    
-    # List available files
     h5ad_files = list_h5ad_files_in_folder(drive, folder_id)
 
     if not h5ad_files:
-        st.warning("No `.h5ad` files found. Please check your Folder ID and sharing permissions with the service account.")
+        st.warning("No `.h5ad` files found. Check your Folder ID and sharing permissions.")
         st.stop()
-    
-    # --- Main Panel for Plotting ---
-    st.header("📊 UMAP Visualization")
 
     selected_file_title = st.selectbox("Select a dataset:", options=list(h5ad_files.keys()))
 
     if selected_file_title:
-        # Load data if it's not already in session state or if a new file is selected
         if 'loaded_file' not in st.session_state or st.session_state.loaded_file != selected_file_title:
             with st.spinner(f"Loading '{selected_file_title}'..."):
                 file_id = h5ad_files[selected_file_title]
                 temp_file_path = download_h5ad_from_drive(drive, file_id, selected_file_title)
-                
                 try:
                     st.session_state['adata'] = sc.read_h5ad(temp_file_path)
                     st.session_state['loaded_file'] = selected_file_title
-                    st.success(f"Successfully loaded {st.session_state.adata.n_obs} cells.")
+                    st.success(f"Successfully loaded {st.session_state.adata.n_obs} cells from {st.session_state.adata.n_vars} genes.")
                 finally:
-                    # Clean up the downloaded file
                     if os.path.exists(temp_file_path):
                         os.remove(temp_file_path)
-    
+
     # --- Plotting Section ---
     if 'adata' in st.session_state:
         adata = st.session_state.adata
-        
-        categorical_obs = adata.obs.select_dtypes(include=['category', 'object']).columns.tolist()
+        st.header(f"Visualizing: `{st.session_state.loaded_file}`")
 
-        if not categorical_obs:
-            st.warning("No categorical data found in `adata.obs` to color the plot.")
-        else:
-            color_by = st.selectbox(
-                "Color UMAP plot by:",
-                options=categorical_obs,
-                help="Select a column from `adata.obs` to color the cells."
-            )
+        # Create two columns for different plot types
+        col1, col2 = st.columns(2)
+
+        # ----- Column 1: Plot by Metadata -----
+        with col1:
+            st.subheader("Plot by Metadata")
+            categorical_obs = adata.obs.select_dtypes(include=['category', 'object']).columns.tolist()
+            if not categorical_obs:
+                st.warning("No categorical metadata found in `adata.obs`.")
+            else:
+                color_by_meta = st.selectbox(
+                    "Select metadata to color by:",
+                    options=categorical_obs
+                )
+                fig1, ax1 = plt.subplots()
+                sc.pl.umap(adata, color=color_by_meta, ax=ax1, show=False, legend_loc='on data')
+                st.pyplot(fig1)
+
+        # ----- Column 2: Plot by Gene Expression -----
+        with col2:
+            st.subheader("Plot by Gene Expression")
+            # Using text_input for gene name
+            gene_name = st.text_input("Enter a gene name (e.g., 'CD14', 'NKG7')", "").strip()
             
-            st.write(f"### UMAP for `{st.session_state.loaded_file}` colored by `{color_by}`")
-            fig, ax = plt.subplots(figsize=(8, 6))
-            sc.pl.umap(adata, color=color_by, ax=ax, show=False, legend_loc='on data')
-            st.pyplot(fig)
+            if gene_name:
+                if gene_name in adata.var_names:
+                    with st.spinner(f"Plotting '{gene_name}'..."):
+                        fig2, ax2 = plt.subplots()
+                        sc.pl.umap(adata, color=gene_name, ax=ax2, show=False, 
+                                   cmap='viridis', # Use a sequential colormap for expression
+                                   )
+                        st.pyplot(fig2)
+                else:
+                    st.error(f"Gene '{gene_name}' not found in dataset. Please check the name (it's case-sensitive).")
 
 except Exception as e:
     st.error(f"An error occurred: {e}")
-    st.error("Please ensure your secrets are configured correctly and the Google Drive folder is shared with the service account's email.")
