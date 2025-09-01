@@ -3,6 +3,7 @@ import scanpy as sc
 import matplotlib.pyplot as plt
 import os
 import json
+import tempfile # Add this to your imports at the top of the file
 
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
@@ -17,18 +18,24 @@ st.set_page_config(
 
 # --- Authentication (Service Account) ---
 @st.cache_resource
-def get_gdrive_services():
+def get_gdrive_service():
     """Authenticates with Google Drive using Service Account credentials."""
     creds_json = st.secrets.google_credentials.service_account_json
-    with open("service_creds.json", "w") as f:
-        f.write(creds_json)
     
-    gauth = GoogleAuth()
-    scope = ["https://www.googleapis.com/auth/drive.readonly"]
-    gauth.credentials = Credentials.from_service_account_file("service_creds.json", scopes=scope)
-    drive = GoogleDrive(gauth)
-    
-    os.remove("service_creds.json")
+    # Use a temporary file in a system-managed directory
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_creds_file:
+        temp_creds_file.write(creds_json)
+        temp_creds_path = temp_creds_file.name
+
+    try:
+        gauth = GoogleAuth()
+        scope = ["https://www.googleapis.com/auth/drive.readonly"]
+        gauth.credentials = Credentials.from_service_account_file(temp_creds_path, scopes=scope)
+        drive = GoogleDrive(gauth)
+    finally:
+        # Clean up the temporary file
+        os.remove(temp_creds_path)
+        
     return drive
 
 # --- Data Fetching Functions ---
@@ -50,7 +57,7 @@ st.title("🔬 Interactive UMAP & Gene Expression Plotter")
 st.write("Select a dataset to visualize cell metadata or individual gene expression.")
 
 try:
-    drive = get_gdrive_services()
+    drive = get_gdrive_service()
     folder_id = st.secrets.folder_id
     h5ad_files = list_h5ad_files_in_folder(drive, folder_id)
 
