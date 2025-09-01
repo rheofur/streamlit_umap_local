@@ -5,6 +5,7 @@ import altair as alt
 import umap.umap_ as umap
 import scanpy as sc
 from sklearn.preprocessing import StandardScaler
+import json # <--- ADD THIS IMPORT
 
 # --- Google Drive Authentication & Download Functions ---
 
@@ -20,11 +21,18 @@ def authenticate_gdrive():
     """
     st.write("Authenticating with Google Drive...")
     try:
-        scopes = ['https://www.googleapis.com/auth/drive.readonly']
+        # --- THIS PART IS UPDATED TO MATCH YOUR SECRETS ---
+        # 1. Get the JSON string from your secrets
+        json_credentials = st.secrets["google_credentials"]["service_account_json"]
+        # 2. Parse the JSON string into a Python dictionary
+        dict_credentials = json.loads(json_credentials)
+        # 3. Use the dictionary to build the credentials
         creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=scopes
+            dict_credentials,
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
         )
+        # --- END OF UPDATED SECTION ---
+
         service = build('drive', 'v3', credentials=creds)
         st.write("Authentication successful.")
         return service
@@ -49,10 +57,8 @@ def download_file_from_drive(_service, file_id):
         done = False
         while not done:
             status, done = downloader.next_chunk()
-            # You could add a progress bar here if needed
-            # st.progress(int(status.progress() * 100))
         
-        file_io.seek(0)  # Move cursor to the beginning of the buffer
+        file_io.seek(0)
         st.write("File download complete.")
         return file_io
     except Exception as e:
@@ -64,24 +70,18 @@ def download_file_from_drive(_service, file_id):
 st.set_page_config(layout="wide")
 st.title("🧬 UMAP Clustering from Google Drive Data")
 
-# Authenticate and get the service object
 drive_service = authenticate_gdrive()
 
 if drive_service:
-    # The ID of your file in Google Drive
     file_id = '19ImkTu4j75f9CpHw-l0p2yQ0aW-a5t2z' 
     
-    # Download the file
     file_buffer = download_file_from_drive(drive_service, file_id)
     
     if file_buffer:
         try:
-            # Load data from the in-memory buffer into a pandas DataFrame
-            # Assuming the file is a CSV. If it's Excel, use pd.read_excel(file_buffer)
             adata_df = pd.read_csv(file_buffer) 
             st.success("✅ Successfully loaded data from Google Drive!")
 
-            # --- Your Original UMAP and Plotting Logic ---
             st.header("UMAP Configuration")
             
             col1, col2 = st.columns(2)
@@ -97,11 +97,9 @@ if drive_service:
             
             adata = sc.AnnData(adata_df)
             
-            # Preprocessing
             scaler = StandardScaler()
             adata.X = scaler.fit_transform(adata.X)
             
-            # UMAP
             reducer = umap.UMAP(
                 n_neighbors=n_neighbors,
                 min_dist=min_dist,
@@ -111,7 +109,6 @@ if drive_service:
             )
             embedding = reducer.fit_transform(adata.X)
             
-            # Visualization
             st.header("UMAP Projection")
             if n_components >= 2:
                 umap_df = pd.DataFrame(embedding[:, :2], columns=['UMAP1', 'UMAP2'])
