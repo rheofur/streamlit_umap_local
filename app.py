@@ -17,7 +17,7 @@ st.set_page_config(
 
 # --- Authentication (Service Account) ---
 @st.cache_resource
-def get_gdrive_service():
+def get_gdrive_services():
     """Authenticates with Google Drive using Service Account credentials."""
     creds_json = st.secrets.google_credentials.service_account_json
     with open("service_creds.json", "w") as f:
@@ -50,7 +50,7 @@ st.title("🔬 Interactive UMAP & Gene Expression Plotter")
 st.write("Select a dataset to visualize cell metadata or individual gene expression.")
 
 try:
-    drive = get_gdrive_service()
+    drive = get_gdrive_services()
     folder_id = st.secrets.folder_id
     h5ad_files = list_h5ad_files_in_folder(drive, folder_id)
 
