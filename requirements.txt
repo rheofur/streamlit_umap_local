@@ -1,6 +1,5 @@
 streamlit
 scanpy
-pandas
 matplotlib
 PyDrive2
 google-auth-oauthlib
