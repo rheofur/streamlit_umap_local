@@ -19,6 +19,7 @@ def authenticate_gdrive():
     Uses Streamlit secrets to create credentials and build the 
     Google Drive service object.
     """
+    # This function remains unchanged
     st.write("Authenticating with Google Drive...")
     try:
         json_credentials = st.secrets["google_credentials"]["service_account_json"]
@@ -39,14 +40,12 @@ def list_files_in_folder(_service, folder_id):
     """
     Lists all non-folder files in a specific Google Drive folder.
     """
+    # This function remains unchanged
     st.write(f"Fetching file list from folder...")
     try:
         files_list = []
         page_token = None
         while True:
-            # The 'q' parameter is a query to filter the files.
-            # It selects files where the specified folder_id is in the 'parents' list
-            # and the mimeType is not a folder.
             response = _service.files().list(
                 q=f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder'",
                 spaces='drive',
@@ -64,14 +63,15 @@ def list_files_in_folder(_service, folder_id):
         st.error(f"An error occurred while listing files: {e}")
         return []
 
-@st.cache_data(ttl=600)
-def download_file_from_drive(_service, file_id):
+# NOTE: The download function is now specific to the selected file,
+# so we remove the global caching to ensure it always downloads the correct file.
+def download_file_from_drive(service, file_id):
     """
     Downloads a file from Google Drive into an in-memory bytes buffer.
     """
     st.write(f"Downloading selected file...")
     try:
-        request = _service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=file_id)
         file_io = io.BytesIO()
         downloader = MediaIoBaseDownload(file_io, request)
         
@@ -103,58 +103,63 @@ if drive_service:
         if not files:
             st.warning(f"No files found in the specified Google Drive folder (ID: {folder_id}).")
         else:
-            # Create a dictionary mapping file names to file IDs for easy lookup
             file_dict = {file['name']: file['id'] for file in files}
             
-            # Create a dropdown menu for the user to select a file
             selected_filename = st.selectbox(
-                "Choose a file from your Google Drive folder to analyze:",
+                "Choose a file from your Google Drive folder:",
                 options=list(file_dict.keys())
             )
             
-            if selected_filename:
-                selected_file_id = file_dict[selected_filename]
-                
-                file_buffer = download_file_from_drive(drive_service, selected_file_id)
-    
-                if file_buffer:
-                    try:
-                        adata_df = pd.read_csv(file_buffer) 
-                        st.success(f"✅ Successfully loaded `{selected_filename}`!")
+            # --- CHANGE 1: ADD A BUTTON TO TRIGGER ANALYSIS ---
+            # The download and analysis code is now inside this 'if' block.
+            # It will only run when the user clicks the button.
+            if st.button("Analyze Selected File"):
+                if selected_filename:
+                    selected_file_id = file_dict[selected_filename]
+                    
+                    file_buffer = download_file_from_drive(drive_service, selected_file_id)
+        
+                    if file_buffer:
+                        try:
+                            # --- CHANGE 2: USE sc.read_h5ad FOR .h5ad FILES ---
+                            # This is the correct way to read AnnData's file format.
+                            st.write("Reading .h5ad file...")
+                            adata = sc.read_h5ad(filename=file_buffer)
+                            st.success(f"✅ Successfully loaded AnnData object from `{selected_filename}`!")
 
-                        # --- UMAP and Plotting Logic (remains the same) ---
-                        st.header("UMAP Configuration")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            n_neighbors = st.slider('Number of Neighbors (n_neighbors)', 2, 100, 15, 1)
-                            min_dist = st.slider('Minimum Distance (min_dist)', 0.0, 1.0, 0.1, 0.01)
-                        with col2:
-                            n_components = st.slider('Number of Components (n_components)', 1, 10, 2, 1)
-                            metric = st.selectbox('Metric', ['euclidean', 'manhattan', 'cosine', 'haversine'])
-                        
-                        st.header("Data Preview")
-                        st.dataframe(adata_df.head())
-                        
-                        adata = sc.AnnData(adata_df)
-                        scaler = StandardScaler()
-                        adata.X = scaler.fit_transform(adata.X)
-                        
-                        reducer = umap.UMAP(
-                            n_neighbors=n_neighbors, min_dist=min_dist, 
-                            n_components=n_components, metric=metric, random_state=42
-                        )
-                        embedding = reducer.fit_transform(adata.X)
-                        
-                        st.header("UMAP Projection")
-                        if n_components >= 2:
-                            umap_df = pd.DataFrame(embedding[:, :2], columns=['UMAP1', 'UMAP2'])
-                            chart = alt.Chart(umap_df).mark_circle(size=60).encode(
-                                x=alt.X('UMAP1', scale=alt.Scale(zero=False)),
-                                y=alt.Y('UMAP2', scale=alt.Scale(zero=False)),
-                                tooltip=['UMAP1', 'UMAP2']
-                            ).properties(width=700, height=500).interactive()
-                            st.altair_chart(chart, use_container_width=True)
-                        else:
-                            st.write("Set 'Number of Components' to 2 or more for a 2D plot.")
-                    except Exception as e:
-                        st.error(f"Failed to process the data from {selected_filename}. Error: {e}")
+                            st.header("UMAP Configuration")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                n_neighbors = st.slider('Number of Neighbors (n_neighbors)', 2, 100, 15, 1)
+                                min_dist = st.slider('Minimum Distance (min_dist)', 0.0, 1.0, 0.1, 0.01)
+                            with col2:
+                                n_components = st.slider('Number of Components (n_components)', 1, 10, 2, 1)
+                                metric = st.selectbox('Metric', ['euclidean', 'manhattan', 'cosine', 'haversine'])
+                            
+                            st.header("Data Preview (Cell Metadata)")
+                            # We display the observation metadata (adata.obs) which is a DataFrame.
+                            st.dataframe(adata.obs.head())
+                            
+                            scaler = StandardScaler()
+                            adata.X = scaler.fit_transform(adata.X)
+                            
+                            reducer = umap.UMAP(
+                                n_neighbors=n_neighbors, min_dist=min_dist, 
+                                n_components=n_components, metric=metric, random_state=42
+                            )
+                            embedding = reducer.fit_transform(adata.X)
+                            
+                            st.header("UMAP Projection")
+                            if n_components >= 2:
+                                umap_df = pd.DataFrame(embedding[:, :2], columns=['UMAP1', 'UMAP2'])
+                                chart = alt.Chart(umap_df).mark_circle(size=60).encode(
+                                    x=alt.X('UMAP1', scale=alt.Scale(zero=False)),
+                                    y=alt.Y('UMAP2', scale=alt.Scale(zero=False)),
+                                    tooltip=['UMAP1', 'UMAP2']
+                                ).properties(width=700, height=500).interactive()
+                                st.altair_chart(chart, use_container_width=True)
+                            else:
+                                st.write("Set 'Number of Components' to 2 or more for a 2D plot.")
+
+                        except Exception as e:
+                            st.error(f"Failed to process the data from {selected_filename}. Error: {e}")
