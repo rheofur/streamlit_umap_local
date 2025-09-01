@@ -27,6 +27,7 @@ def get_gdrive_service():
     scope = ["https://www.googleapis.com/auth/drive.readonly"]
     gauth.credentials = Credentials.from_service_account_file("service_creds.json", scopes=scope)
     drive = GoogleDrive(gauth)
+    
     os.remove("service_creds.json")
     return drive
 
@@ -77,7 +78,6 @@ try:
         adata = st.session_state.adata
         st.header(f"Visualizing: `{st.session_state.loaded_file}`")
 
-        # Create two columns for different plot types
         col1, col2 = st.columns(2)
 
         # ----- Column 1: Plot by Metadata -----
@@ -98,7 +98,6 @@ try:
         # ----- Column 2: Plot by Gene Expression -----
         with col2:
             st.subheader("Plot by Gene Expression")
-            # Using text_input for gene name
             gene_name = st.text_input("Enter a gene name (e.g., 'CD14', 'NKG7')", "").strip()
             
             if gene_name:
@@ -106,7 +105,7 @@ try:
                     with st.spinner(f"Plotting '{gene_name}'..."):
                         fig2, ax2 = plt.subplots()
                         sc.pl.umap(adata, color=gene_name, ax=ax2, show=False, 
-                                   cmap='viridis', # Use a sequential colormap for expression
+                                   cmap='viridis',
                                    )
                         st.pyplot(fig2)
                 else:
