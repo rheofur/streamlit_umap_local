@@ -1,122 +1,131 @@
 import streamlit as st
+import pandas as pd
+import io
+import altair as alt
+import umap.umap_ as umap
 import scanpy as sc
-import matplotlib.pyplot as plt
-import os
-import json
-import tempfile # Add this to your imports at the top of the file
+from sklearn.preprocessing import StandardScaler
 
-from pydrive2.auth import GoogleAuth
-from pydrive2.drive import GoogleDrive
+# --- Google Drive Authentication & Download Functions ---
+
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="UMAP & Gene Expression Plotter",
-    page_icon="🧬",
-    layout="wide"
-)
-
-# --- Authentication (Service Account) ---
-@st.cache_resource
-def get_gdrive_service():
-    """Authenticates with Google Drive using Service Account credentials."""
-    creds_json = st.secrets.google_credentials.service_account_json
-    
-    # Use a temporary file in a system-managed directory
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_creds_file:
-        temp_creds_file.write(creds_json)
-        temp_creds_path = temp_creds_file.name
-
+@st.cache_resource(ttl=600)
+def authenticate_gdrive():
+    """
+    Uses Streamlit secrets to create credentials and build the 
+    Google Drive service object. Caches the result for 10 minutes.
+    """
+    st.write("Authenticating with Google Drive...")
     try:
-        gauth = GoogleAuth()
-        scope = ["https://www.googleapis.com/auth/drive.readonly"]
-        gauth.credentials = Credentials.from_service_account_file(temp_creds_path, scopes=scope)
-        drive = GoogleDrive(gauth)
-    finally:
-        # Clean up the temporary file
-        os.remove(temp_creds_path)
+        scopes = ['https://www.googleapis.com/auth/drive.readonly']
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=scopes
+        )
+        service = build('drive', 'v3', credentials=creds)
+        st.write("Authentication successful.")
+        return service
+    except Exception as e:
+        st.error(f"Google Drive authentication failed: {e}")
+        return None
+
+@st.cache_data(ttl=600)
+def download_file_from_drive(_service, file_id):
+    """
+    Downloads a file from Google Drive into an in-memory bytes buffer.
+    Caches the downloaded data for 10 minutes.
+    The underscore in _service tells st.cache_data to ignore this argument 
+    when checking for cache validity.
+    """
+    st.write(f"Downloading file with ID: {file_id}...")
+    try:
+        request = _service.files().get_media(fileId=file_id)
+        file_io = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_io, request)
         
-    return drive
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            # You could add a progress bar here if needed
+            # st.progress(int(status.progress() * 100))
+        
+        file_io.seek(0)  # Move cursor to the beginning of the buffer
+        st.write("File download complete.")
+        return file_io
+    except Exception as e:
+        st.error(f"An error occurred while downloading the file: {e}")
+        return None
 
-# --- Data Fetching Functions ---
-@st.cache_data
-def list_h5ad_files_in_folder(_drive, folder_id):
-    """Lists .h5ad files in a specific Google Drive folder."""
-    query = f"'{folder_id}' in parents and trashed=false"
-    file_list = _drive.ListFile({'q': query}).GetList()
-    return {file['title']: file['id'] for file in file_list if file['title'].endswith('.h5ad')}
+# --- Main Streamlit App ---
 
-def download_h5ad_from_drive(_drive, file_id, file_name):
-    """Downloads an h5ad file from drive to a temporary local path."""
-    h5ad_file = _drive.CreateFile({'id': file_id})
-    h5ad_file.GetContentFile(file_name)
-    return file_name
+st.set_page_config(layout="wide")
+st.title("🧬 UMAP Clustering from Google Drive Data")
 
-# --- App UI ---
-st.title("🔬 Interactive UMAP & Gene Expression Plotter")
-st.write("Select a dataset to visualize cell metadata or individual gene expression.")
+# Authenticate and get the service object
+drive_service = authenticate_gdrive()
 
-try:
-    drive = get_gdrive_service()
-    folder_id = st.secrets.folder_id
-    h5ad_files = list_h5ad_files_in_folder(drive, folder_id)
+if drive_service:
+    # The ID of your file in Google Drive
+    file_id = '19ImkTu4j75f9CpHw-l0p2yQ0aW-a5t2z' 
+    
+    # Download the file
+    file_buffer = download_file_from_drive(drive_service, file_id)
+    
+    if file_buffer:
+        try:
+            # Load data from the in-memory buffer into a pandas DataFrame
+            # Assuming the file is a CSV. If it's Excel, use pd.read_excel(file_buffer)
+            adata_df = pd.read_csv(file_buffer) 
+            st.success("✅ Successfully loaded data from Google Drive!")
 
-    if not h5ad_files:
-        st.warning("No `.h5ad` files found. Check your Folder ID and sharing permissions.")
-        st.stop()
-
-    selected_file_title = st.selectbox("Select a dataset:", options=list(h5ad_files.keys()))
-
-    if selected_file_title:
-        if 'loaded_file' not in st.session_state or st.session_state.loaded_file != selected_file_title:
-            with st.spinner(f"Loading '{selected_file_title}'..."):
-                file_id = h5ad_files[selected_file_title]
-                temp_file_path = download_h5ad_from_drive(drive, file_id, selected_file_title)
-                try:
-                    st.session_state['adata'] = sc.read_h5ad(temp_file_path)
-                    st.session_state['loaded_file'] = selected_file_title
-                    st.success(f"Successfully loaded {st.session_state.adata.n_obs} cells from {st.session_state.adata.n_vars} genes.")
-                finally:
-                    if os.path.exists(temp_file_path):
-                        os.remove(temp_file_path)
-
-    # --- Plotting Section ---
-    if 'adata' in st.session_state:
-        adata = st.session_state.adata
-        st.header(f"Visualizing: `{st.session_state.loaded_file}`")
-
-        col1, col2 = st.columns(2)
-
-        # ----- Column 1: Plot by Metadata -----
-        with col1:
-            st.subheader("Plot by Metadata")
-            categorical_obs = adata.obs.select_dtypes(include=['category', 'object']).columns.tolist()
-            if not categorical_obs:
-                st.warning("No categorical metadata found in `adata.obs`.")
-            else:
-                color_by_meta = st.selectbox(
-                    "Select metadata to color by:",
-                    options=categorical_obs
-                )
-                fig1, ax1 = plt.subplots()
-                sc.pl.umap(adata, color=color_by_meta, ax=ax1, show=False, legend_loc='on data')
-                st.pyplot(fig1)
-
-        # ----- Column 2: Plot by Gene Expression -----
-        with col2:
-            st.subheader("Plot by Gene Expression")
-            gene_name = st.text_input("Enter a gene name (e.g., 'CD14', 'NKG7')", "").strip()
+            # --- Your Original UMAP and Plotting Logic ---
+            st.header("UMAP Configuration")
             
-            if gene_name:
-                if gene_name in adata.var_names:
-                    with st.spinner(f"Plotting '{gene_name}'..."):
-                        fig2, ax2 = plt.subplots()
-                        sc.pl.umap(adata, color=gene_name, ax=ax2, show=False, 
-                                   cmap='viridis',
-                                   )
-                        st.pyplot(fig2)
-                else:
-                    st.error(f"Gene '{gene_name}' not found in dataset. Please check the name (it's case-sensitive).")
+            col1, col2 = st.columns(2)
+            with col1:
+                n_neighbors = st.slider('Number of Neighbors (n_neighbors)', 2, 100, 15, 1)
+                min_dist = st.slider('Minimum Distance (min_dist)', 0.0, 1.0, 0.1, 0.01)
+            with col2:
+                n_components = st.slider('Number of Components (n_components)', 1, 10, 2, 1)
+                metric = st.selectbox('Metric', ['euclidean', 'manhattan', 'cosine', 'haversine'])
+            
+            st.header("Data Preview")
+            st.dataframe(adata_df.head())
+            
+            adata = sc.AnnData(adata_df)
+            
+            # Preprocessing
+            scaler = StandardScaler()
+            adata.X = scaler.fit_transform(adata.X)
+            
+            # UMAP
+            reducer = umap.UMAP(
+                n_neighbors=n_neighbors,
+                min_dist=min_dist,
+                n_components=n_components,
+                metric=metric,
+                random_state=42
+            )
+            embedding = reducer.fit_transform(adata.X)
+            
+            # Visualization
+            st.header("UMAP Projection")
+            if n_components >= 2:
+                umap_df = pd.DataFrame(embedding[:, :2], columns=['UMAP1', 'UMAP2'])
+                chart = alt.Chart(umap_df).mark_circle(size=60).encode(
+                    x=alt.X('UMAP1', scale=alt.Scale(zero=False)),
+                    y=alt.Y('UMAP2', scale=alt.Scale(zero=False)),
+                    tooltip=['UMAP1', 'UMAP2']
+                ).properties(
+                    width=700,
+                    height=500
+                ).interactive()
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.write("Set 'Number of Components' to 2 or more for a 2D plot.")
 
-except Exception as e:
-    st.error(f"An error occurred: {e}")
+        except Exception as e:
+            st.error(f"Failed to process the data. Error: {e}")
