@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 import io
-import altair as alt
-import umap.umap_ as umap
 import scanpy as sc
-from sklearn.preprocessing import StandardScaler
 import json
+import matplotlib.pyplot as plt
 
 # --- Google Drive Authentication & File Handling Functions ---
+# (These functions remain the same as the previous version)
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -15,11 +14,6 @@ from googleapiclient.http import MediaIoBaseDownload
 
 @st.cache_resource(ttl=600)
 def authenticate_gdrive():
-    """
-    Uses Streamlit secrets to create credentials and build the 
-    Google Drive service object.
-    """
-    # This function remains unchanged
     st.write("Authenticating with Google Drive...")
     try:
         json_credentials = st.secrets["google_credentials"]["service_account_json"]
@@ -37,10 +31,6 @@ def authenticate_gdrive():
 
 @st.cache_data(ttl=600)
 def list_files_in_folder(_service, folder_id):
-    """
-    Lists all non-folder files in a specific Google Drive folder.
-    """
-    # This function remains unchanged
     st.write(f"Fetching file list from folder...")
     try:
         files_list = []
@@ -63,12 +53,7 @@ def list_files_in_folder(_service, folder_id):
         st.error(f"An error occurred while listing files: {e}")
         return []
 
-# NOTE: The download function is now specific to the selected file,
-# so we remove the global caching to ensure it always downloads the correct file.
 def download_file_from_drive(service, file_id):
-    """
-    Downloads a file from Google Drive into an in-memory bytes buffer.
-    """
     st.write(f"Downloading selected file...")
     try:
         request = service.files().get_media(fileId=file_id)
@@ -89,7 +74,10 @@ def download_file_from_drive(service, file_id):
 # --- Main Streamlit App ---
 
 st.set_page_config(layout="wide")
-st.title("🧬 UMAP Clustering from Google Drive Data")
+st.title("🔬 Interactive UMAP Visualizer for Pre-processed Data")
+
+if 'gene' not in st.session_state:
+    st.session_state.gene = ''
 
 drive_service = authenticate_gdrive()
 
@@ -110,56 +98,67 @@ if drive_service:
                 options=list(file_dict.keys())
             )
             
-            # --- CHANGE 1: ADD A BUTTON TO TRIGGER ANALYSIS ---
-            # The download and analysis code is now inside this 'if' block.
-            # It will only run when the user clicks the button.
-            if st.button("Analyze Selected File"):
+            if st.button("Load and Visualize File"):
                 if selected_filename:
                     selected_file_id = file_dict[selected_filename]
                     
-                    file_buffer = download_file_from_drive(drive_service, selected_file_id)
-        
-                    if file_buffer:
-                        try:
-                            # --- CHANGE 2: USE sc.read_h5ad FOR .h5ad FILES ---
-                            # This is the correct way to read AnnData's file format.
-                            st.write("Reading .h5ad file...")
+                    with st.spinner(f"Loading `{selected_filename}`..."):
+                        file_buffer = download_file_from_drive(drive_service, selected_file_id)
+                        if file_buffer:
                             adata = sc.read_h5ad(filename=file_buffer)
-                            st.success(f"✅ Successfully loaded AnnData object from `{selected_filename}`!")
+                            st.session_state.adata = adata
+                            st.success(f"✅ Successfully loaded `{selected_filename}`!")
 
-                            st.header("UMAP Configuration")
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                n_neighbors = st.slider('Number of Neighbors (n_neighbors)', 2, 100, 15, 1)
-                                min_dist = st.slider('Minimum Distance (min_dist)', 0.0, 1.0, 0.1, 0.01)
-                            with col2:
-                                n_components = st.slider('Number of Components (n_components)', 1, 10, 2, 1)
-                                metric = st.selectbox('Metric', ['euclidean', 'manhattan', 'cosine', 'haversine'])
-                            
-                            st.header("Data Preview (Cell Metadata)")
-                            # We display the observation metadata (adata.obs) which is a DataFrame.
-                            st.dataframe(adata.obs.head())
-                            
-                            scaler = StandardScaler()
-                            adata.X = scaler.fit_transform(adata.X)
-                            
-                            reducer = umap.UMAP(
-                                n_neighbors=n_neighbors, min_dist=min_dist, 
-                                n_components=n_components, metric=metric, random_state=42
-                            )
-                            embedding = reducer.fit_transform(adata.X)
-                            
-                            st.header("UMAP Projection")
-                            if n_components >= 2:
-                                umap_df = pd.DataFrame(embedding[:, :2], columns=['UMAP1', 'UMAP2'])
-                                chart = alt.Chart(umap_df).mark_circle(size=60).encode(
-                                    x=alt.X('UMAP1', scale=alt.Scale(zero=False)),
-                                    y=alt.Y('UMAP2', scale=alt.Scale(zero=False)),
-                                    tooltip=['UMAP1', 'UMAP2']
-                                ).properties(width=700, height=500).interactive()
-                                st.altair_chart(chart, use_container_width=True)
-                            else:
-                                st.write("Set 'Number of Components' to 2 or more for a 2D plot.")
+if 'adata' in st.session_state:
+    adata = st.session_state.adata
+    
+    st.header("🎨 UMAP Visualization")
+    
+    if 'X_umap' not in adata.obsm:
+        st.error("Error: The loaded file does not contain UMAP coordinates in `.obsm['X_umap']`.")
+    else:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # --- CHANGE: REMOVED CURATED LIST ---
+            # The dropdown is now populated with all columns from the .obs dataframe.
+            available_obs = list(adata.obs.columns)
+            
+            color_by_meta = st.selectbox(
+                "Color by cell metadata:",
+                options=available_obs
+            )
+            
+            dot_size = st.slider("Dot size:", min_value=1, max_value=100, value=15)
+            
+            st.write(f"Generating UMAP plot colored by **{color_by_meta}**...")
+            with st.spinner('Generating plot...'):
+                fig_meta = sc.pl.umap(adata, color=[color_by_meta], 
+                                      frameon=False, size=dot_size, 
+                                      return_fig=True, show=False)
+                st.pyplot(fig_meta)
 
-                        except Exception as e:
-                            st.error(f"Failed to process the data from {selected_filename}. Error: {e}")
+        with col2:
+            st.session_state.gene = st.text_input(
+                "Search for a gene to color by:",
+                value=st.session_state.gene
+            )
+            
+            if st.session_state.gene:
+                gene_to_plot = st.session_state.gene.strip()
+                if gene_to_plot in adata.var_names:
+                    st.write(f"Generating UMAP plot for gene **{gene_to_plot}**...")
+                    with st.spinner('Generating plot...'):
+                        fig_gene = sc.pl.umap(adata, color=[gene_to_plot], 
+                                              frameon=False, size=dot_size,
+                                              return_fig=True, show=False,
+                                              cmap='viridis')
+                        st.pyplot(fig_gene)
+                else:
+                    st.warning(f"Gene '{gene_to_plot}' not found in the dataset.")
+
+        with st.expander("Show Data Preview"):
+            st.subheader("Cell Metadata (`.obs`)")
+            st.dataframe(adata.obs.head())
+            st.subheader("Gene Metadata (`.var`)")
+            st.dataframe(adata.var.head())
