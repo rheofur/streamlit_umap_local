@@ -29,8 +29,9 @@ pip install -r requirements.txt
 In your terminal (while in the app's folder), run the following command:
 
 ```
-streamlit run app.py
+streamlit run app.py --server.maxUploadSize 2000 # This sets maximum file size=2000MB=2GB
 ```
+Of note, above "server.maxUploadSize" option sets maximum file size handled by upload. Since h5ad file will be loaded on RAM, adjust value appropriate for your file size (default maximum file size would be ~200MB)
 
 ## View in your browser:
 The app should automatically open in a new tab in your web browser. If it doesn't, your terminal will provide a local URL (usually http://localhost:8501) that you can visit.
